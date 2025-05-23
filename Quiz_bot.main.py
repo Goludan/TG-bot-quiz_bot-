@@ -7,21 +7,18 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram import F
 import datetime
 
-# Настройка системы логирования
 logging.basicConfig(level=logging.INFO)
 
-# Токен вашего Telegram бота
+# Токен Telegram бота
 TELEGRAM_BOT_TOKEN = ''
 
-# Создание объектов бота и диспетчера
 telegram_bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
-# Названия файлов баз данных
 QUIZ_DATABASE_FILE = 'quiz_bot.db'
 RESULTS_DATABASE_FILE = 'quiz_results.db'
 
-# Вопросы для викторины
+# Вопросы для квиза
 quiz_questions = [
     {
         'question': 'Что такое Python?',

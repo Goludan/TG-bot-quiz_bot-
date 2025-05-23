@@ -1,27 +1,28 @@
+import logging
 import aiosqlite
 import asyncio
-import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters.command import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 from aiogram import F
 import datetime
 
+# Настройка системы логирования
 logging.basicConfig(level=logging.INFO)
 
-API_TOKEN = '7508335252:AAHGr1iW3pZSUwzs3KcUA-SDAFx6v71_3UU'
+# Токен вашего Telegram бота
+TELEGRAM_BOT_TOKEN = ''
 
-# Объект бота
-bot = Bot(token=API_TOKEN)
-# Диспетчер
+# Создание объектов бота и диспетчера
+telegram_bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
-# Задаем имя базы данных
-DB_NAME = 'quiz_bot.db'
-DB_RESULTS_NAME = 'quiz_results.db'
+# Названия файлов баз данных
+QUIZ_DATABASE_FILE = 'quiz_bot.db'
+RESULTS_DATABASE_FILE = 'quiz_results.db'
 
-# Структура квиза
-quiz_data = [
+# Вопросы для викторины
+quiz_questions = [
     {
         'question': 'Что такое Python?',
         'options': ['Язык программирования', 'Тип данных', 'Музыкальный инструмент', 'Змея на английском'],
@@ -74,207 +75,253 @@ quiz_data = [
     },
 ]
 
-def generate_options_keyboard(answer_option, right_answer):
-    # Создаем собрщика клавиатур типа Inline
-    builder = InlineKeyboardBuilder()
+# Хранилище для подсчета правильных ответов
+user_scores_storage = {}
 
-    # В цикле создаем 4 Inline кнопки, а точнее Callback-кнопки
-    for option in answer_option:
-        builder.add(types.InlineKeyboardButton(
-            # Текст на кнопках соответствует вариантам ответов
-            text = option,
-            # Присваиваем данные для колбэк запроса.
-            # Если ответ верный сформируется колбэк-запрос с данными "right_answer"
-            # Если ответ неверный сформируется колбэк-запрос с данными "wrong_answer"
-            callback_data="right_answer" if option == right_answer else "wrong_answer")
-            )
-    # Выводим по одной кнопке в столбик
-    builder.adjust(1)
-    return builder.as_markup()
+# Создание таблицы для хранения состояния квиза пользователей
+async def create_quiz_state_database_table():    
+    async with aiosqlite.connect(QUIZ_DATABASE_FILE) as database_connection:
+        await database_connection.execute('''CREATE TABLE IF NOT EXISTS quiz_state 
+                                         (user_id INTEGER PRIMARY KEY, question_index INTEGER)''')
+        await database_connection.commit()
 
-@dp.callback_query(F.data == 'right_answer')
-async def right_answer(callback: types.CallbackQuery):
-    # Редактируем сообщение с целью убрать кнопки (reply_markup=None)
-    await callback.bot.edit_message_reply_markup(
-        chat_id=callback.from_user.id,
-        message_id=callback.message.message_id,
-        reply_markup=None
+# Получение текущего индекса вопроса для указанного пользователя
+async def get_current_question_index_for_user(user_id):
+    async with aiosqlite.connect(QUIZ_DATABASE_FILE) as database_connection:
+        async with database_connection.execute('SELECT question_index FROM quiz_state WHERE user_id = ?', 
+                                             (user_id,)) as database_cursor:
+            result = await database_cursor.fetchone()
+            return result[0] if result else 0
+
+# Обновление индекса текущего вопроса для пользователя
+async def update_question_index_for_user(user_id, new_index):
+    async with aiosqlite.connect(QUIZ_DATABASE_FILE) as database_connection:
+        await database_connection.execute('''INSERT OR REPLACE INTO quiz_state 
+                                         (user_id, question_index) VALUES (?, ?)''', 
+                                         (user_id, new_index))
+        await database_connection.commit()
+
+# Сохранение информации об игроке в базу данных
+async def save_player_information(player_id, username, first_name, last_name):
+    async with aiosqlite.connect(RESULTS_DATABASE_FILE) as database_connection:
+        await database_connection.execute('''INSERT OR IGNORE INTO players 
+                                         (player_id, username, first_name, last_name) 
+                                         VALUES (?, ?, ?, ?)''',
+                                         (player_id, username, first_name, last_name))
+        await database_connection.commit()
+
+# Сохранение результата прохождения квиза
+async def save_quiz_result(player_id, score):
+    async with aiosqlite.connect(RESULTS_DATABASE_FILE) as database_connection:
+        await database_connection.execute('''INSERT INTO quiz_results 
+                                         (player_id, quiz_name, score) 
+                                         VALUES (?, ?, ?)''',
+                                         (player_id, "Python Quiz", score))
+        await database_connection.commit()
+
+# Получение последнего результата квиза для пользователя
+async def get_last_quiz_result_for_user(user_id):
+    async with aiosqlite.connect(RESULTS_DATABASE_FILE) as database_connection:
+        async with database_connection.execute('''SELECT score, timestamp FROM quiz_results 
+                                               WHERE player_id = ? 
+                                               ORDER BY timestamp DESC LIMIT 1''',
+                                            (user_id,)) as database_cursor:
+            return await database_cursor.fetchone()
+
+# Возвращение статистики игрока
+async def get_player_statistics(user_id):
+    async with aiosqlite.connect(RESULTS_DATABASE_FILE) as database_connection:
+        async with database_connection.execute('''SELECT COUNT(*), AVG(score), MAX(score) 
+                                               FROM quiz_results WHERE player_id = ?''',
+                                            (user_id,)) as database_cursor:
+            return await database_cursor.fetchone()
+
+# Инициализация таблицы в базе данных результатов
+async def initialize_results_database_tables():
+    async with aiosqlite.connect(RESULTS_DATABASE_FILE) as database_connection:
+        await database_connection.execute('''CREATE TABLE IF NOT EXISTS players(
+            player_id INTEGER PRIMARY KEY, 
+            username TEXT, 
+            first_name TEXT, 
+            last_name TEXT
+        )''')
+        await database_connection.execute('''CREATE TABLE IF NOT EXISTS quiz_results(
+            result_id INTEGER PRIMARY KEY AUTOINCREMENT, 
+            player_id INTEGER, 
+            quiz_name TEXT, 
+            score INTEGER,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, 
+            FOREIGN KEY (player_id) REFERENCES players(player_id)
+        )''')
+        await database_connection.commit()
+
+# Генерация клавиатуры с вариантами ответов
+async def generate_question_keyboard(answer_options, correct_answer):
+    keyboard_builder = InlineKeyboardBuilder()
+    for option in answer_options:
+        keyboard_builder.add(types.InlineKeyboardButton(
+            text=option,
+            callback_data="right_answer" if option == correct_answer else "wrong_answer"
+        ))
+    keyboard_builder.adjust(1)
+    return keyboard_builder.as_markup()
+
+# Вопрос пользователю
+async def send_question_to_user(message, user_id):
+    current_question_index = await get_current_question_index_for_user(user_id)
+    question_data = quiz_questions[current_question_index]
+    correct_option_index = question_data['correct_option']
+    answer_options = question_data['options']
+    
+    question_keyboard = await generate_question_keyboard(
+        answer_options, 
+        answer_options[correct_option_index]
     )
-    # Отправляем сообщение в чат, что ответ верный
-    await callback.message.answer('Верно!')
-     # Получение текущего вопроса для данного пользователя
-    current_question_index = await get_quiz_index(callback.from_user.id)
+    await message.answer(question_data['question'], reply_markup=question_keyboard)
 
-    # Обновление номера текущего вопроса в базе данных
-    current_question_index += 1
-    await update_quiz_index(callback.from_user.id, current_question_index)
-
-    # Проверяем, достигнут ли конец квиза
-    if current_question_index < len(quiz_data):
-        # Следующий вопрос
-        await get_question(callback.message, callback.from_user.id)
-    else:
-        # Уведомление об окончании квиза
-        await callback.message.answer('Это был последний вопрос. Квиз завершен!')
-
-
-@dp.callback_query(F.data == 'wrong_answer')
-async def wrong_answer(callback: types.CallbackQuery):
-    # Редактируем сообщение с целью убрать кнопки (reply_markup=None)
-    await callback.bot.edit_message_reply_markup(
-        chat_id=callback.from_user.id,
-        message_id=callback.message.message_id,
-        reply_markup=None
-    )
-
-    # Получение текущего вопроса для данного пользователя
-    current_question_index = await get_quiz_index(callback.from_user.id)
-    correct_option = quiz_data[current_question_index]['correct_option']
-
-    # Отправляем сообщение в чат сообщение об ошибке с указанием верного ответа
-    await callback.message.answer(f"Неверно! Правильный ответ: {quiz_data[current_question_index]['options'][correct_option]}")
-
-    # Обновление номера текущего вопроса в базе данных
-    current_question_index += 1
-    await update_quiz_index(callback.from_user.id, current_question_index)
-
-    # Проверяем, достигнут ли конец квиза
-    if current_question_index < len(quiz_data):
-        # Следующий вопрос
-        await get_question(callback.message, callback.from_user.id)
-    else:
-        # Уведомление об окончании квиза
-        await callback.message.answer('Это был последний вопрос. Квиз завершен!')
-
-# Хэндлер на команду /start
+# Обработчик команды /start
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    builder = ReplyKeyboardBuilder()
-    builder.add(types.KeyboardButton(text="Начать игру"))
-    await message.answer("Добро пожаловать в квиз!", reply_markup=builder.as_markup(resize_keyboard=True))
+async def handle_start_command(message: types.Message):
+    keyboard_builder = ReplyKeyboardBuilder()
+    keyboard_builder.add(types.KeyboardButton(text="Начать игру"))
+    await message.answer(
+        "Добро пожаловать в викторину по Python!", 
+        reply_markup=keyboard_builder.as_markup(resize_keyboard=True)
+    )
 
-async def get_question(message, user_id: int):
-
-    # Запрашиваем из базы текущий индекс для вопроса
-    current_question_index = await get_quiz_index(user_id)
-    # Получаем индекс правильного ответа для текущего вопроса
-    correct_index = quiz_data[current_question_index]['correct_option']
-    # Получаем список вариантов ответа для текущего вопроса
-    opts = quiz_data[current_question_index]['options']
-
-    # Функция генерации кнопок для текущего вопроса квиза
-    # В качестве аргументов передаем варианты ответов и значение правильного ответа (не индекс!)
-    kb = generate_options_keyboard(opts, opts[correct_index])
-    # Отправляем в чат сообщение с вопросом, прикрепляем сгенерированные кнопки
-    await message.answer(f"{quiz_data[current_question_index]['question']}", reply_markup=kb)
-
-@dp.message(F.text=="Начать игру")
-async def new_quiz(message: types.Message):
-    # Получаем id пользователя, отправившего сообщение
+# Начинаем новый квиз
+@dp.message(F.text == "Начать игру")
+async def start_new_quiz(message: types.Message):
     user_id = message.from_user.id
-    # Регистрируем игрока
-    username = message.from_user.username
-    first_name = message.from_user.first_name
-    last_name = message.from_user.last_name
-    await save_player(user_id, username, first_name, last_name)
-    # Сбрасываем значение текущего индекса вопроса квиза в 0
-    current_question_index = 0
-    await update_quiz_index(user_id, current_question_index)
-    # Запрашиваем новый вопрос для квиза
-    await get_question(message, user_id)
+    await save_player_information(
+        user_id, 
+        message.from_user.username, 
+        message.from_user.first_name, 
+        message.from_user.last_name
+    )
+    await update_question_index_for_user(user_id, 0)
+    user_scores_storage[user_id] = 0
+    await send_question_to_user(message, user_id)
 
-async def get_quiz_index(user_id):
-    # Подключаемся к базе данных
-    async with aiosqlite.connect(DB_NAME) as db:
-        # Получаем запись для заданного пользователя
-        async with db.execute('SELECT question_index FROM quiz_state WHERE user_id = (?)', (user_id, )) as cursor:
-            # Возвращаем результат
-            results = await cursor.fetchone()
-            if results is not None:
-                return results[0]
-            else:
-                return 0
+# Обработка правильного ответа
+@dp.callback_query(F.data == 'right_answer')
+async def handle_correct_answer(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    user_scores_storage[user_id] = user_scores_storage.get(user_id, 0) + 1
+    
+    await callback_query.bot.edit_message_reply_markup(
+        chat_id=callback_query.from_user.id,
+        message_id=callback_query.message.message_id,
+        reply_markup=None
+    )
+    await callback_query.message.answer('Правильно!')
+    
+    current_question_index = await get_current_question_index_for_user(user_id)
+    current_question_index += 1
+    await update_question_index_for_user(user_id, current_question_index)
 
-async def update_quiz_index(user_id, index):
-    # Создаем соединение с базой данных (если она не существует, она будет создана)
-    async with aiosqlite.connect(DB_NAME) as db:
-        # Вставляем новую запись или заменяем её, если с данными user_id уже существует
-        await db.execute('INSERT OR REPLACE INTO quiz_state (user_id, question_index) VALUES (?, ?)', (user_id, index))
-        # Сохраняем изменения
-        await db.commit()
+    if current_question_index < len(quiz_questions):
+        await send_question_to_user(callback_query.message, user_id)
+    else:
+        final_score = user_scores_storage.get(user_id, 0)
+        await save_quiz_result(user_id, final_score)
+        del user_scores_storage[user_id]
+        
+        player_stats = await get_player_statistics(user_id)
+        last_quiz_result = await get_last_quiz_result_for_user(user_id)
+        
+        result_message = (
+            f"Викторина завершена!\n"
+            f"Ваш результат: {final_score} из {len(quiz_questions)}\n"
+            f"Последний результат: {last_quiz_result[0] if last_quiz_result else 'нет данных'}\n"
+            f"Всего попыток: {player_stats[0] if player_stats else 0}\n"
+            f"Средний балл: {round(player_stats[1], 1) if player_stats and player_stats[1] else 'нет данных'}\n"
+            f"Лучший результат: {player_stats[2] if player_stats and player_stats[2] else 'нет данных'}"
+        )
+        
+        keyboard_builder = ReplyKeyboardBuilder()
+        keyboard_builder.add(types.KeyboardButton(text="Начать игру"))
+        keyboard_builder.add(types.KeyboardButton(text="Моя статистика"))
+        
+        await callback_query.message.answer(
+            result_message, 
+            reply_markup=keyboard_builder.as_markup(resize_keyboard=True)
+        )
 
-async def save_player(player_id, username, first_name, last_name):
-    async with aiosqlite.connect(DB_RESULTS_NAME) as db:
-        async with db.cursor() as cursor:
-            await cursor.execute('''
-            INSERT OR IGNORE INTO players (player_id, username, first_name, last_name) VALUES (?, ?, ?, ?)
-            ''', (player_id, username, first_name, last_name))
-            await db.commit()
+# Обработка неправильного ответа
+@dp.callback_query(F.data == 'wrong_answer')
+async def handle_wrong_answer(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    current_question_index = await get_current_question_index_for_user(user_id)
+    correct_option_index = quiz_questions[current_question_index]['correct_option']
+    
+    await callback_query.bot.edit_message_reply_markup(
+        chat_id=callback_query.from_user.id,
+        message_id=callback_query.message.message_id,
+        reply_markup=None
+    )
+    
+    await callback_query.message.answer(
+        f"Неправильно! Правильный ответ: {quiz_questions[current_question_index]['options'][correct_option_index]}"
+    )
+    
+    current_question_index += 1
+    await update_question_index_for_user(user_id, current_question_index)
 
-async def save_result(player_id, quiz_name, score):
-    async with aiosqlite.connect(DB_RESULTS_NAME) as db:
-        async with db.cursor() as cursor:
-            await cursor.execute('''
-                SELECT quiz_name, score, timestamp
-                FROM quiz_results
-                WHERE player_id = ?
-                ORDER BY timestamp DESC
-                LIMIT 1
-            ''', (player_id,))
-            result = await cursor.fetchone()
-            return result 
+    if current_question_index < len(quiz_questions):
+        await send_question_to_user(callback_query.message, user_id)
+    else:
+        final_score = user_scores_storage.get(user_id, 0)
+        await save_quiz_result(user_id, final_score)
+        del user_scores_storage[user_id]
+        
+        player_stats = await get_player_statistics(user_id)
+        last_quiz_result = await get_last_quiz_result_for_user(user_id)
+        
+        result_message = (
+            f"Квиз завершен!\n"
+            f"Ваш результат: {final_score} из {len(quiz_questions)}\n"
+            f"Последний результат: {last_quiz_result[0] if last_quiz_result else 'нет данных'}\n"
+            f"Всего попыток: {player_stats[0] if player_stats else 0}\n"
+            f"Средний балл: {round(player_stats[1], 1) if player_stats and player_stats[1] else 'нет данных'}\n"
+            f"Лучший результат: {player_stats[2] if player_stats and player_stats[2] else 'нет данных'}"
+        )
+        
+        keyboard_builder = ReplyKeyboardBuilder()
+        keyboard_builder.add(types.KeyboardButton(text="Начать игру"))
+        keyboard_builder.add(types.KeyboardButton(text="Моя статистика"))
+        
+        await callback_query.message.answer(
+            result_message, 
+            reply_markup=keyboard_builder.as_markup(resize_keyboard=True)
+        )
 
-async def get_player_stats(player_id):
-    async with aiosqlite.connect(DB_RESULTS_NAME) as db:
-        async with db.cursor() as cursor:
-            await cursor.execute('''
-                SELECT
-                    AVG(score),
-                    COUNT(*),
-                    MAX(score)
-                FROM quiz_results
-                WHERE player_id = ?
-            ''', (player_id,))
-            result = await cursor.fetchone()
-            return result 
+# Вывод статистики игрока
+@dp.message(F.text == "Моя статистика")
+async def show_player_statistics(message: types.Message):
+    user_id = message.from_user.id
+    player_stats = await get_player_statistics(user_id)
+    last_quiz_result = await get_last_quiz_result_for_user(user_id)
+    
+    if not player_stats or player_stats[0] == 0:
+        await message.answer("У вас еще нет результатов.")
+        return
+    
+    statistics_message = (
+        f"Ваша статистика:\n"
+        f"Последний результат: {last_quiz_result[0] if last_quiz_result else 'нет данных'}\n"
+        f"Всего попыток: {player_stats[0]}\n"
+        f"Средний балл: {round(player_stats[1], 1)}\n"
+        f"Лучший результат: {player_stats[2]}"
+    )
+    
+    await message.answer(statistics_message)
 
-
-# Хендлер на команду /quiz
-@dp.message(Command('quiz'))
-async def cmd_quiz(message: types.Message):
-    # Логика начала квиза
-    await message.answer('Давайте начнём квиз! Первый вопрос: ...')
-    await new_quiz(message)
-
-async def create_table():
-    # Создаем соединение с базой данных (если она не существует, то она будет создана)
-    async with aiosqlite.connect(DB_NAME) as db:
-        # Выполняем SQL-запрос к базе данных
-        await db.execute('''CREATE TABLE IF NOT EXISTS quiz_state (user_id INTEGER PRIMARY KEY, question_index INTEGER)''')
-        # Сохраняем изменения
-        await db.commit()
-
-async def create_tables():
-    async with aiosqlite.connect(DB_RESULTS_NAME) as db:
-        async with db.cursor() as cursor:
-            await cursor.execute('''CREATE TABLE IF NOT EXISTS players(
-            player_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, last_name TEXT
-            )
-            ''')
-            await cursor.execute('''CREATE TABLE IF NOT EXISTS players(
-            result_id INTEGER PRIMARY KEY AUTOINCREMENT, player_id INTEGER, quiz_name TEXT, score INTEGER,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (player_id) REFERENCES players(player_id)
-            )
-            ''')
-        await db.commit()
-
-
-# Запуск процесса поллинга нвоых апдейтов
+# Основная функция
 async def main():
-    # Запускаем создание таблицы базы данных
-    await create_table()
-    await create_tables()
-    await dp.start_polling(bot)
+    await create_quiz_state_database_table()
+    await initialize_results_database_tables()
+    await dp.start_polling(telegram_bot)
 
-
-asyncio.run(main())
+if __name__ == '__main__':
+    asyncio.run(main())

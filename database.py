@@ -1,14 +1,12 @@
-# Хранилище для подсчета правильных ответов
-user_scores_storage = {}
+import aiosqlite
+from config import QUIZ_DATABASE_FILE, RESULTS_DATABASE_FILE
 
-# Создание таблицы для хранения состояния квиза пользователей
 async def create_quiz_state_database_table():    
     async with aiosqlite.connect(QUIZ_DATABASE_FILE) as database_connection:
         await database_connection.execute('''CREATE TABLE IF NOT EXISTS quiz_state 
                                          (user_id INTEGER PRIMARY KEY, question_index INTEGER)''')
         await database_connection.commit()
 
-# Получение текущего индекса вопроса для указанного пользователя
 async def get_current_question_index_for_user(user_id):
     async with aiosqlite.connect(QUIZ_DATABASE_FILE) as database_connection:
         async with database_connection.execute('SELECT question_index FROM quiz_state WHERE user_id = ?', 
@@ -16,7 +14,6 @@ async def get_current_question_index_for_user(user_id):
             result = await database_cursor.fetchone()
             return result[0] if result else 0
 
-# Обновление индекса текущего вопроса для пользователя
 async def update_question_index_for_user(user_id, new_index):
     async with aiosqlite.connect(QUIZ_DATABASE_FILE) as database_connection:
         await database_connection.execute('''INSERT OR REPLACE INTO quiz_state 
@@ -24,7 +21,6 @@ async def update_question_index_for_user(user_id, new_index):
                                          (user_id, new_index))
         await database_connection.commit()
 
-# Сохранение информации об игроке в базу данных
 async def save_player_information(player_id, username, first_name, last_name):
     async with aiosqlite.connect(RESULTS_DATABASE_FILE) as database_connection:
         await database_connection.execute('''INSERT OR IGNORE INTO players 
@@ -33,7 +29,6 @@ async def save_player_information(player_id, username, first_name, last_name):
                                          (player_id, username, first_name, last_name))
         await database_connection.commit()
 
-# Сохранение результата прохождения квиза
 async def save_quiz_result(player_id, score):
     async with aiosqlite.connect(RESULTS_DATABASE_FILE) as database_connection:
         await database_connection.execute('''INSERT INTO quiz_results 
@@ -42,7 +37,6 @@ async def save_quiz_result(player_id, score):
                                          (player_id, "Python Quiz", score))
         await database_connection.commit()
 
-# Получение последнего результата квиза для пользователя
 async def get_last_quiz_result_for_user(user_id):
     async with aiosqlite.connect(RESULTS_DATABASE_FILE) as database_connection:
         async with database_connection.execute('''SELECT score, timestamp FROM quiz_results 
@@ -51,7 +45,6 @@ async def get_last_quiz_result_for_user(user_id):
                                             (user_id,)) as database_cursor:
             return await database_cursor.fetchone()
 
-# Возвращение статистики игрока
 async def get_player_statistics(user_id):
     async with aiosqlite.connect(RESULTS_DATABASE_FILE) as database_connection:
         async with database_connection.execute('''SELECT COUNT(*), AVG(score), MAX(score) 
@@ -59,7 +52,6 @@ async def get_player_statistics(user_id):
                                             (user_id,)) as database_cursor:
             return await database_cursor.fetchone()
 
-# Инициализация таблицы в базе данных результатов
 async def initialize_results_database_tables():
     async with aiosqlite.connect(RESULTS_DATABASE_FILE) as database_connection:
         await database_connection.execute('''CREATE TABLE IF NOT EXISTS players(

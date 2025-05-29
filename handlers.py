@@ -1,15 +1,30 @@
-# Обработчик команды /start
-@dp.message(Command("start"))
+from aiogram import types, F
+from aiogram.filters.command import Command
+from database import *
+from keyboards import *
+from quiz_data import quiz_questions
+
+# Хранилище для подсчета правильных ответов
+user_scores_storage = {}
+
+async def send_question_to_user(message, user_id):
+    current_question_index = await get_current_question_index_for_user(user_id)
+    question_data = quiz_questions[current_question_index]
+    correct_option_index = question_data['correct_option']
+    answer_options = question_data['options']
+    
+    question_keyboard = await generate_question_keyboard(
+        answer_options, 
+        answer_options[correct_option_index]
+    )
+    await message.answer(question_data['question'], reply_markup=question_keyboard)
+
 async def handle_start_command(message: types.Message):
-    keyboard_builder = ReplyKeyboardBuilder()
-    keyboard_builder.add(types.KeyboardButton(text="Начать игру"))
     await message.answer(
         "Добро пожаловать в викторину по Python!", 
-        reply_markup=keyboard_builder.as_markup(resize_keyboard=True)
+        reply_markup=get_start_keyboard()
     )
 
-# Начинаем новый квиз
-@dp.message(F.text == "Начать игру")
 async def start_new_quiz(message: types.Message):
     user_id = message.from_user.id
     await save_player_information(
@@ -22,8 +37,6 @@ async def start_new_quiz(message: types.Message):
     user_scores_storage[user_id] = 0
     await send_question_to_user(message, user_id)
 
-# Обработка правильного ответа
-@dp.callback_query(F.data == 'right_answer')
 async def handle_correct_answer(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
     user_scores_storage[user_id] = user_scores_storage.get(user_id, 0) + 1
@@ -58,17 +71,11 @@ async def handle_correct_answer(callback_query: types.CallbackQuery):
             f"Лучший результат: {player_stats[2] if player_stats and player_stats[2] else 'нет данных'}"
         )
         
-        keyboard_builder = ReplyKeyboardBuilder()
-        keyboard_builder.add(types.KeyboardButton(text="Начать игру"))
-        keyboard_builder.add(types.KeyboardButton(text="Моя статистика"))
-        
         await callback_query.message.answer(
             result_message, 
-            reply_markup=keyboard_builder.as_markup(resize_keyboard=True)
+            reply_markup=get_restart_keyboard()
         )
 
-# Обработка неправильного ответа
-@dp.callback_query(F.data == 'wrong_answer')
 async def handle_wrong_answer(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
     current_question_index = await get_current_question_index_for_user(user_id)
@@ -106,17 +113,11 @@ async def handle_wrong_answer(callback_query: types.CallbackQuery):
             f"Лучший результат: {player_stats[2] if player_stats and player_stats[2] else 'нет данных'}"
         )
         
-        keyboard_builder = ReplyKeyboardBuilder()
-        keyboard_builder.add(types.KeyboardButton(text="Начать игру"))
-        keyboard_builder.add(types.KeyboardButton(text="Моя статистика"))
-        
         await callback_query.message.answer(
             result_message, 
-            reply_markup=keyboard_builder.as_markup(resize_keyboard=True)
+            reply_markup=get_restart_keyboard()
         )
 
-# Вывод статистики игрока
-@dp.message(F.text == "Моя статистика")
 async def show_player_statistics(message: types.Message):
     user_id = message.from_user.id
     player_stats = await get_player_statistics(user_id)
